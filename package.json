@@ -1,0 +1,20 @@
+{
+  "name": "pharmaceutical-supply-chain-blockchain",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["frontend", "backend", "blockchain"],
+  "engines": { "node": ">=24.15.0 <25", "npm": ">=11 <12" },
+  "packageManager": "npm@11.12.1",
+  "scripts": {
+    "dev:frontend": "npm run dev --workspace frontend",
+    "dev:backend": "npm run dev --workspace backend",
+    "dev:blockchain": "npm run node --workspace blockchain",
+    "build": "npm run build --workspace frontend",
+    "check:backend": "npm run check --workspace backend",
+    "db:validate": "npm run db:validate --workspace backend",
+    "db:generate": "npm run db:generate --workspace backend",
+    "db:migrate": "npm run db:migrate --workspace backend --",
+    "db:seed": "npm run db:seed --workspace backend",
+    "blockchain:compile": "npm run compile --workspace blockchain"
+  }
+}

@@ -1,0 +1,351 @@
+// DATABASE_URL comes from backend/.env through prisma.config.js.
+// PostgreSQL CHECK constraints and append-only triggers are prepared in
+// docs/database/CONSTRAINTS.sql for inclusion in the first reviewed migration.
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OrganizationType {
+  MANUFACTURER
+  DISTRIBUTOR
+  PHARMACY
+  ADMIN
+}
+
+enum UserRole {
+  ADMIN
+  MANUFACTURER_OPERATOR
+  DISTRIBUTOR_OPERATOR
+  PHARMACY_OPERATOR
+}
+
+enum BatchStatus {
+  CREATED
+  RELEASED
+  QUARANTINED
+  RECALLED
+}
+
+enum UnitStatus {
+  AVAILABLE
+  IN_TRANSIT
+  MISSING
+  DISPENSED
+  QUARANTINED
+  RECALLED
+}
+
+enum ShipmentStatus {
+  DRAFT
+  DISPATCHED
+  RECEIVED
+  RECEIVED_WITH_DISCREPANCY
+  CANCELLED
+}
+
+enum EventType {
+  BATCH_CREATED
+  SHIPMENT_CREATED
+  SHIPMENT_DISPATCHED
+  SHIPMENT_RECEIVED
+  SHIPMENT_DISCREPANCY
+  SHIPMENT_TRANSFERRED
+  PHARMACY_RECEIVED
+  VERIFICATION_PERFORMED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+  EVENT_CORRECTED
+}
+
+enum ActorType {
+  USER
+  SYSTEM
+  PUBLIC
+}
+
+enum BlockchainStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+enum DiscrepancyStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+}
+
+enum VerificationResult {
+  RECORD_FOUND
+  NOT_FOUND
+  EXPIRED
+  RECALLED
+  NOT_ELIGIBLE
+}
+
+model Organization {
+  id        String           @id @default(uuid()) @db.Uuid
+  name      String           @db.VarChar(160)
+  type      OrganizationType
+  isActive  Boolean          @default(true)
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime         @updatedAt @db.Timestamptz(3)
+
+  users             User[]
+  batches           Batch[]
+  heldUnits         MedicineUnit[]
+  outgoingShipments Shipment[]         @relation("ShipmentSource")
+  incomingShipments Shipment[]         @relation("ShipmentDestination")
+  events            SupplyChainEvent[]
+
+  @@index([type, isActive])
+}
+
+model User {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  fullName       String   @db.VarChar(160)
+  email          String   @unique @db.VarChar(254)
+  role           UserRole
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  organization  Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  events        SupplyChainEvent[]
+  reportedCases DiscrepancyCase[]  @relation("CaseReporter")
+  resolvedCases DiscrepancyCase[]  @relation("CaseResolver")
+
+  @@index([organizationId, role])
+}
+
+model Medicine {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(160)
+  genericName String   @db.VarChar(160)
+  dosage      String   @db.VarChar(80)
+  form        String   @db.VarChar(80)
+  category    String   @db.VarChar(100)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+  batches     Batch[]
+
+  @@index([name])
+  @@index([genericName])
+}
+
+model Batch {
+  id                String      @id @default(uuid()) @db.Uuid
+  batchNumber       String      @unique @db.VarChar(80)
+  medicineId        String      @db.Uuid
+  manufacturerId    String      @db.Uuid
+  manufacturingDate DateTime    @db.Date
+  expiryDate        DateTime    @db.Date
+  quantity          Int
+  status            BatchStatus @default(CREATED)
+  createdAt         DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime    @updatedAt @db.Timestamptz(3)
+
+  medicine         Medicine           @relation(fields: [medicineId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  manufacturer     Organization       @relation(fields: [manufacturerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  units            MedicineUnit[]
+  events           SupplyChainEvent[]
+  verificationLogs VerificationLog[]
+
+  @@index([medicineId])
+  @@index([manufacturerId, createdAt])
+  @@index([status, expiryDate])
+}
+
+model MedicineUnit {
+  id                    String     @id @default(uuid()) @db.Uuid
+  serialNumber          String     @unique @db.VarChar(100)
+  batchId               String     @db.Uuid
+  status                UnitStatus @default(AVAILABLE)
+  // Last confirmed holder. Never transfer custody merely because dispatch occurred.
+  currentOrganizationId String     @db.Uuid
+  createdAt             DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime   @updatedAt @db.Timestamptz(3)
+
+  batch               Batch              @relation(fields: [batchId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  currentOrganization Organization       @relation(fields: [currentOrganizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  shipmentUnits       ShipmentUnit[]
+  events              SupplyChainEvent[]
+  verificationLogs    VerificationLog[]
+
+  @@index([batchId, status])
+  @@index([currentOrganizationId, status])
+}
+
+model Shipment {
+  id                        String         @id @default(uuid()) @db.Uuid
+  shipmentNumber            String         @unique @db.VarChar(80)
+  sourceOrganizationId      String         @db.Uuid
+  destinationOrganizationId String         @db.Uuid
+  expectedQuantity          Int
+  // Null until receipt is finalized; zero means receipt finalized with zero units.
+  receivedQuantity          Int?
+  status                    ShipmentStatus @default(DRAFT)
+  dispatchedAt              DateTime?      @db.Timestamptz(3)
+  receivedAt                DateTime?      @db.Timestamptz(3)
+  createdAt                 DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime       @updatedAt @db.Timestamptz(3)
+
+  source      Organization       @relation("ShipmentSource", fields: [sourceOrganizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  destination Organization       @relation("ShipmentDestination", fields: [destinationOrganizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  units       ShipmentUnit[]
+  events      SupplyChainEvent[]
+  discrepancy DiscrepancyCase?
+
+  @@index([sourceOrganizationId, status, createdAt])
+  @@index([destinationOrganizationId, status, createdAt])
+  @@index([status, dispatchedAt])
+}
+
+model ShipmentUnit {
+  shipmentId     String    @db.Uuid
+  medicineUnitId String    @db.Uuid
+  // False represents a known serialized unit received outside the manifest.
+  isExpected     Boolean   @default(true)
+  receivedAt     DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  shipment     Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  medicineUnit MedicineUnit      @relation(fields: [medicineUnitId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  missingCases DiscrepancyUnit[]
+
+  @@id([shipmentId, medicineUnitId])
+  @@index([medicineUnitId])
+  @@index([shipmentId, isExpected, receivedAt])
+}
+
+// Append-only: no updatedAt, cascading deletions, or normal update/delete workflow.
+model SupplyChainEvent {
+  id                String    @id @default(uuid()) @db.Uuid
+  eventType         EventType
+  actorType         ActorType @default(USER)
+  actorUserId       String?   @db.Uuid
+  organizationId    String?   @db.Uuid
+  shipmentId        String?   @db.Uuid
+  batchId           String?   @db.Uuid
+  medicineUnitId    String?   @db.Uuid
+  discrepancyCaseId String?   @db.Uuid
+  verificationLogId String?   @unique @db.Uuid
+  correctsEventId   String?   @db.Uuid
+  expectedQuantity  Int?
+  receivedQuantity  Int?
+  missingQuantity   Int?
+  occurredAt        DateTime  @db.Timestamptz(3)
+  recordedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  payloadVersion    Int       @default(1)
+  canonicalPayload  String    @db.Text
+  eventHash         String    @unique @db.Char(64)
+
+  actor            User?              @relation(fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  organization     Organization?      @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  shipment         Shipment?          @relation(fields: [shipmentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  batch            Batch?             @relation(fields: [batchId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  medicineUnit     MedicineUnit?      @relation(fields: [medicineUnitId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  discrepancyCase  DiscrepancyCase?   @relation(fields: [discrepancyCaseId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  verificationLog  VerificationLog?   @relation(fields: [verificationLogId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  correctsEvent    SupplyChainEvent?  @relation("EventCorrection", fields: [correctsEventId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  corrections      SupplyChainEvent[] @relation("EventCorrection")
+  blockchainAudits BlockchainAudit[]
+
+  @@index([shipmentId, occurredAt, id])
+  @@index([batchId, occurredAt, id])
+  @@index([medicineUnitId, occurredAt, id])
+  @@index([organizationId, occurredAt, id])
+  @@index([actorUserId, occurredAt])
+  @@index([discrepancyCaseId, occurredAt])
+  @@index([correctsEventId])
+  @@index([eventType, occurredAt])
+}
+
+// One row per submission attempt. Never overwrite an earlier transaction hash.
+model BlockchainAudit {
+  id              String           @id @default(uuid()) @db.Uuid
+  eventId         String           @db.Uuid
+  attempt         Int              @default(1)
+  transactionHash String?          @db.VarChar(66)
+  blockNumber     BigInt?
+  network         String           @db.VarChar(80)
+  chainId         BigInt
+  contractAddress String           @db.VarChar(42)
+  status          BlockchainStatus @default(PENDING)
+  submittedAt     DateTime?        @db.Timestamptz(3)
+  confirmedAt     DateTime?        @db.Timestamptz(3)
+  failureReason   String?          @db.Text
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+  event           SupplyChainEvent @relation(fields: [eventId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([eventId, attempt])
+  @@unique([chainId, transactionHash])
+  @@index([status, createdAt])
+}
+
+model DiscrepancyCase {
+  id                 String            @id @default(uuid()) @db.Uuid
+  shipmentId         String            @unique @db.Uuid
+  expectedQuantity   Int
+  receivedQuantity   Int
+  unexpectedQuantity Int               @default(0)
+  missingQuantity    Int
+  reportedById       String            @db.Uuid
+  status             DiscrepancyStatus @default(OPEN)
+  createdAt          DateTime          @default(now()) @db.Timestamptz(3)
+  resolvedAt         DateTime?         @db.Timestamptz(3)
+  resolutionNotes    String?           @db.Text
+  resolvedById       String?           @db.Uuid
+  updatedAt          DateTime          @updatedAt @db.Timestamptz(3)
+
+  shipment     Shipment           @relation(fields: [shipmentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reportedBy   User               @relation("CaseReporter", fields: [reportedById], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  resolvedBy   User?              @relation("CaseResolver", fields: [resolvedById], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  missingUnits DiscrepancyUnit[]
+  events       SupplyChainEvent[]
+
+  // Supports a same-shipment FK from the normalized missing-unit list.
+  @@unique([id, shipmentId])
+  @@index([status, createdAt])
+  @@index([reportedById])
+  @@index([resolvedById])
+}
+
+// Frozen missing-at-report list; later recovery is recorded by a new event.
+model DiscrepancyUnit {
+  discrepancyCaseId String @db.Uuid
+  shipmentId        String @db.Uuid
+  medicineUnitId    String @db.Uuid
+
+  discrepancyCase DiscrepancyCase @relation(fields: [discrepancyCaseId, shipmentId], references: [id, shipmentId], onDelete: Restrict, onUpdate: Restrict)
+  shipmentUnit    ShipmentUnit    @relation(fields: [shipmentId, medicineUnitId], references: [shipmentId, medicineUnitId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([discrepancyCaseId, medicineUnitId])
+  @@index([shipmentId, medicineUnitId])
+}
+
+// Anonymous lookup history; no consumer name, IP address, account, or location.
+model VerificationLog {
+  id                  String             @id @default(uuid()) @db.Uuid
+  requestedIdentifier String             @db.VarChar(100)
+  verifiedAt          DateTime           @default(now()) @db.Timestamptz(3)
+  result              VerificationResult
+  medicineUnitId      String?            @db.Uuid
+  batchId             String?            @db.Uuid
+  medicineUnit        MedicineUnit?      @relation(fields: [medicineUnitId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  batch               Batch?             @relation(fields: [batchId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  event               SupplyChainEvent?
+
+  @@index([requestedIdentifier, verifiedAt])
+  @@index([batchId, verifiedAt])
+  @@index([medicineUnitId, verifiedAt])
+  @@index([result, verifiedAt])
+}

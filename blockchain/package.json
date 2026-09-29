@@ -1,0 +1,9 @@
+{
+  "name": "@pharma/blockchain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.15.0 <25" },
+  "scripts": { "node": "hardhat node --hostname 127.0.0.1", "compile": "hardhat compile" },
+  "devDependencies": { "hardhat": "3.18.0" }
+}

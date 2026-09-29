@@ -1,0 +1,7 @@
+:root { font-family: system-ui, sans-serif; color: #163047; background: #f3f6f9; line-height: 1.6; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 850px; margin: 12vh auto; padding: 2rem; }
+h1 { font-size: clamp(2rem, 5vw, 3.5rem); line-height: 1.15; }
+.eyebrow { color: #326b7b; font-weight: 700; letter-spacing: .1em; }
+.status { margin-top: 2rem; padding: 1rem; border-left: 3px solid #326b7b; background: #fff; }
